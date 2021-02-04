@@ -53,7 +53,7 @@ class MolecLieResNet(LieResNet):
         self.aug =aug
         self.random_rotate = SE3aug()#RandomRotation()
     def featurize(self, mb):
-        charges = mb['charges'] / self.charge_scale
+        charges = mb['charges'].float() / self.charge_scale
         c_vec = torch.stack([torch.ones_like(charges),charges,charges**2],dim=-1) # 
         one_hot_charges = (mb['one_hot'][:,:,:,None]*c_vec[:,:,None,:]).float().reshape(*charges.shape,-1)
         atomic_coords = mb['positions'].float()
