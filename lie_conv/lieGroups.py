@@ -13,9 +13,10 @@ class LieGroup(object,metaclass=Named):
     lie_dim = NotImplemented # dimension of the lie algebra of G. (e.g. 1 for SO(2))
     q_dim = NotImplemented # dimension which the quotient space X/G is embedded. (e.g. 1 for SO(2) acting on R2)
     
-    def __init__(self,alpha=.2):
+    def __init__(self,alpha=.2, nsamples=None):
         super().__init__()
         self.alpha=alpha
+        self.nsamples = nsamples
 
     def exp(self,a):
         """ Computes (matrix) exponential Lie algebra elements (in a given basis).
@@ -395,6 +396,59 @@ class SE2(SO2):
         d_theta = abq_pairs[...,0].abs()
         d_r = norm(abq_pairs[...,1:],dim=-1)
         return d_theta*self.alpha + (1-self.alpha)*d_r
+
+
+# An implementation of SE(2) without log map, using "canonical" lifts of group elements
+@export
+class SE2_canonical(LieGroup):
+    lie_dim = 3
+    rep_dim = 3
+    q_dim = 0
+
+    def matrixify(self, X, nsamples):
+        angles = 2*np.pi * X[..., [2]] / nsamples
+        cosines = torch.cos(angles)
+        sines = torch.sin(angles)
+
+        rotations_1 = torch.cat([cosines, -sines], dim=2).unsqueeze(2)
+        rotations_2 = torch.cat([sines, cosines], dim=2).unsqueeze(2)
+        rotations = torch.cat([rotations_1, rotations_2], dim=2)
+
+        X_lift = torch.cat(
+            [rotations, X[..., :2].unsqueeze(3)], dim=3)
+        X_lift = torch.cat(
+            [X_lift, torch.ones_like(X_lift)[:, :, :1, :]], dim=2)
+        X_lift[:, :, [2], :2] = 0.
+
+        return X_lift, rotations
+
+    def lift(self,x,nsamples,**kwargs):
+        """assumes p has shape (*,n,2), vals has shape (*,n,c), mask has shape (*,n)
+            returns (a,v) with shapes [(*,n*nsamples,lie_dim),(*,n*nsamples,c)"""
+        p,v,m = x
+
+        rotations = torch.arange(nsamples, dtype=p.dtype, device=p.device).repeat((*p.shape[:2]))
+        rotations = rotations.unsqueeze(-1)
+        p_lift = p[...,None,:].repeat((1,)*len(p.shape[:-1])+(nsamples,1))
+        p_lift = p_lift.reshape(p.shape[0], p.shape[1] * nsamples, p.shape[2])
+        X_lift = torch.cat([p_lift, rotations], dim=-1)
+        
+        X_pairs = X_lift[..., None, :, :] - X_lift[..., :, None, :]
+
+        _, rotations_inverse = self.matrixify(-X_lift, nsamples)
+        rotations_inverse = rotations_inverse.unsqueeze(2).repeat(1, 1, rotations_inverse.shape[1], 1, 1)
+
+        X_pairs = torch.cat([(rotations_inverse@(X_pairs[..., :2, None])).squeeze(-1), torch.remainder(X_pairs[..., [-1]], nsamples)], dim=-1)
+
+        # expand v and mask like q
+        expanded_v = v[...,None,:].repeat((1,)*len(v.shape[:-1])+(nsamples,1)) # (bs,n,c) -> (bs,n,1,c) -> (bs,n,ns,c)
+        expanded_v = expanded_v.reshape(*X_lift.shape[:-1],v.shape[-1]) # (bs,n,ns,c) -> (bs,n*ns,c)
+        expanded_mask = m[...,None].repeat((1,)*len(v.shape[:-1])+(nsamples,)) # (bs,n) -> (bs,n,ns)
+        expanded_mask = expanded_mask.reshape(*X_lift.shape[:-1]) # (bs,n,ns) -> (bs,n*ns)
+
+        return (X_pairs, expanded_v, expanded_mask)
+
+
 
 ## Lie Groups acting on R3
 

@@ -250,7 +250,7 @@ class MnistRotDataset(VisionDataset,metaclass=Named):
     def default_aug_layers(self):
         return RandomRotateTranslate(0)# no translation
 
-
+@export
 class DynamicsDataset(Dataset, metaclass=Named):
     num_targets = 1
 
@@ -362,35 +362,49 @@ class DynamicsDataset(Dataset, metaclass=Named):
     
 @export
 class SpringDynamics(DynamicsDataset):
-    default_root_dir = os.path.expanduser('~/datasets/ODEDynamics/SpringDynamics/')
+    default_root_dir = os.path.expanduser('./datasets/ODEDynamics/SpringDynamics/')
     sys_dim = 2
     
     def __init__(self, root_dir=default_root_dir, train=True, download=True, n_systems=100, space_dim=2, regen=False,
-                 chunk_len=5):
+                 chunk_len=5, num_particles=6, dataset=None, load_preprocessed=False, save_after_processing=False):
         super().__init__()
-        filename = os.path.join(root_dir, f"spring_{space_dim}D_{n_systems}_{('train' if train else 'test')}.pz")
+        self.num_particles = num_particles
+        filename = os.path.join(root_dir, f"spring_{space_dim}D_{n_systems}_particles_{num_particles}_{('train' if train else 'test')}.pz")
         self.space_dim = space_dim
-        if os.path.exists(filename) and not regen:
-            ts, zs,self.SysP = torch.load(filename)
-        elif download:
-            sim_kwargs = dict(
-                traj_len=500,
-                delta_t=0.01,
-            )
-            ts, zs, self.SysP = self.generate_trajectory_data(n_systems=n_systems, sim_kwargs=sim_kwargs)
-            os.makedirs(root_dir, exist_ok=True)
-            print(filename)
-            torch.save((ts, zs, self.SysP),filename)
+        if not load_preprocessed:
+            if os.path.exists(filename) and not regen:
+                if dataset is not None:
+                    ts, zs,self.SysP = dataset 
+                else:
+                    ts, zs,self.SysP = torch.load(filename)
+            elif download:
+                sim_kwargs = dict(
+                    traj_len=500,
+                    delta_t=0.01,
+                )
+                ts, zs, self.SysP = self.generate_trajectory_data(n_systems=n_systems, sim_kwargs=sim_kwargs)
+                os.makedirs(root_dir, exist_ok=True)
+                print(filename)
+                torch.save((ts, zs, self.SysP),filename)
+            else:
+                raise Exception("Download=False and data not there")
+            self.sys_dim = self.SysP.shape[-1]
+            self.Ts, self.Zs = self.format_training_data(ts, zs, chunk_len)
+            if save_after_processing:
+                assert filename.endswith(".pz")
+                filename_processed = filename[:-3] + f"_chunklen_{chunk_len}.pz"
+                torch.save((self.Ts, self.Zs, self.SysP), filename_processed)
         else:
-            raise Exception("Download=False and data not there")
-        self.sys_dim = self.SysP.shape[-1]
-        self.Ts, self.Zs = self.format_training_data(ts, zs, chunk_len)
-    
+            assert filename.endswith(".pz")
+            filename_processed = filename[:-3] + f"_chunklen_{chunk_len}.pz"
+            self.Ts, self.Zs, self.SysP = torch.load(filename_processed)
+            self.sys_dim = self.SysP.shape[-1]
+
     def sample_system(self, n_systems, space_dim, ood=False):
         """
         See DynamicsDataset.sample_system docstring
         """
-        n = np.random.choice([6]) #TODO: handle padding/batching with different n
+        n = np.random.choice([self.num_particles]) #TODO: handle padding/batching with different n
         if ood: n = np.random.choice([4,8])
         masses = (3 * torch.rand(n_systems, n).double() + .1)
         k = 5*torch.rand(n_systems, n).double()
@@ -403,6 +417,12 @@ class SpringDynamics(DynamicsDataset):
     def _get_dynamics(self, sys_params):
         H = lambda t, z: SpringH(z, *sys_params)
         return HamiltonianDynamics(H, wgrad=False)
+
+    def tensors_to(self, device):
+        self.Ts = self.Ts.to(device)
+        self.Zs = self.Zs.to(device)
+        self.SysP = self.SysP.to(device)
+
 
 @export
 class NBodyDynamics(DynamicsDataset):
